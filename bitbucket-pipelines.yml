@@ -1,0 +1,67 @@
+image: golang:1.17.6-alpine@sha256:519c827ec22e5cf7417c9ff063ec840a446cdd30681700a16cf42eb43823e27c
+
+options:
+  max-time: 15
+
+pipelines:
+  branches:
+    master:
+     - &test
+       parallel:
+        - step:
+            name: test
+            caches: [gomod]
+            script:
+              - export CGO_ENABLED=0
+              - go test -v ./...
+        - step:
+            name: lint
+            image: docker.io/golangci/golangci-lint:v1.43.0-alpine@sha256:24d773a07983d19963b6e07c7d5bce1b7835f8fb37486d34081e6a40302c17c5
+            script:
+              - golangci-lint run
+     - step:
+         name: build
+         caches: [docker]
+         services: [docker]
+         script:
+           - &env |-
+               export IMAGE_NAME="aws-vpc-exporter"
+               export IMAGE_TAG="${BITBUCKET_TAG:-${BITBUCKET_COMMIT:0:7}}"
+           - &build docker build -t "${IMAGE_NAME}:${IMAGE_TAG}" .
+
+  tags:
+    v*:
+      - *test
+      - step:
+          name: build
+          caches: [docker]
+          services: [docker]
+          oidc: true
+          script:
+            - *env
+            - *build
+            - pipe: atlassian/aws-ecr-push-image:1.5.0
+              variables:
+                AWS_DEFAULT_REGION: ap-south-1
+                AWS_OIDC_ROLE_ARN: arn:aws:iam::885068115609:role/bitbucket-pipelines-aws-vpc-exporter
+                IMAGE_NAME: $IMAGE_NAME
+                TAGS: '${IMAGE_TAG}'
+
+
+  pull-requests:
+    '**':
+      - *test
+      - step:
+          name: build
+          caches: [docker]
+          services: [docker]
+          script:
+            - *env
+            - *build
+
+definitions:
+  caches:
+    gomod: '${GOPATH}/pkg/mod'
+  services:
+     docker:
+       memory: 3072
